@@ -199,8 +199,10 @@ A queued scan stays `queued` until no active scans remain, then moves to `runnin
 
 A temporary provider limit moves active work to `rate_limited`. The engine preserves
 completed work and returns the scan to `running` when its automatic retry is due. An
-active scan can also move to `paused`; `stopped` and `failed` require an operator to
-resume them. Reaching `jobLimit` also stops a scan after already-started jobs finish;
-raise or remove the limit before resuming it.
+active scan can also move to `paused`. Stopped and paused scans require the manual
+**Resume** action. Failed scans do too by default; if **Auto-resume failed scans** is
+enabled in Settings, the backend returns each scan to `pending` after it has remained
+failed for about one second, without a browser action. Reaching `jobLimit` also stops a
+scan after already-started jobs finish; raise or remove the limit before resuming it.
 
 The following pages break down each part of the form.

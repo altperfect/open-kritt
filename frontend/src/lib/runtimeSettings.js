@@ -7,6 +7,7 @@ export const RUNTIME_SETTING_KEYS = [
   'codexMaxSubagentsPerSession',
   'minFreeStorageGb',
   'ignoreLowStorage',
+  'autoResumeFailedScans',
   'memoryReserveGb',
   'scanRunnerMemoryMb',
   'scanRunnerMemoryReservationMb',

@@ -41,6 +41,7 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'codexMaxSubagentsPerSession',
       'minFreeStorageGb',
       'ignoreLowStorage',
+      'autoResumeFailedScans',
       'memoryReserveGb',
       'scanRunnerMemoryMb',
       'scanRunnerMemoryReservationMb',
@@ -49,7 +50,10 @@ test('settings API exposes the whitelisted runtime settings', async () => {
       'cyberSafetyRetryCount',
       'harnessTimeoutSeconds',
     ]);
+    assert.equal(body.settings.autoResumeFailedScans.value, false);
+    assert.equal(body.settings.autoResumeFailedScans.source, 'default');
     assert.equal(body.capabilities.dedicatedScanConcurrency.available, true);
+    assert.equal(body.capabilities.automaticScanResume.available, true);
   } finally {
     await new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
   }
@@ -61,7 +65,10 @@ test('runtime settings expose only whitelisted effective values and their source
     paths.runtimeConfigPath,
     'ENGINE_WORKER_COUNT=6\nENGINE_CODEX_HOME=/secret/account\nOPENROUTER_API_KEY=must-not-leak\n'
   );
-  await writeFile(paths.environmentFilePath, 'ENGINE_RETRY_COUNT=3\nGITHUB_TOKEN=must-not-leak\n');
+  await writeFile(
+    paths.environmentFilePath,
+    'ENGINE_RETRY_COUNT=3\nBACKEND_AUTO_RESUME_FAILED_SCANS=true\nGITHUB_TOKEN=must-not-leak\n'
+  );
 
   const result = await readRuntimeSettings({
     ...paths,
@@ -94,6 +101,9 @@ test('runtime settings expose only whitelisted effective values and their source
   assert.equal(result.settings.ignoreLowStorage.value, false);
   assert.equal(result.settings.ignoreLowStorage.source, 'default');
   assert.equal(result.settings.ignoreLowStorage.type, 'boolean');
+  assert.equal(result.settings.autoResumeFailedScans.value, true);
+  assert.equal(result.settings.autoResumeFailedScans.source, 'project_environment');
+  assert.equal(result.settings.autoResumeFailedScans.type, 'boolean');
   assert.equal(result.settings.memoryReserveGb.value, 2);
   assert.equal(result.settings.scanRunnerMemoryMb.value, 1536);
   assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 1536);
@@ -116,6 +126,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
       codexMaxSubagentsPerSession: 5,
       minFreeStorageGb: 18.5,
       ignoreLowStorage: true,
+      autoResumeFailedScans: true,
       memoryReserveGb: 2.5,
       scanRunnerMemoryMb: 1792,
       scanRunnerMemoryReservationMb: 768,
@@ -138,6 +149,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(runtimeValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
   assert.equal(runtimeValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(runtimeValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
+  assert.equal(runtimeValues.BACKEND_AUTO_RESUME_FAILED_SCANS, 'true');
   assert.equal(runtimeValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
   assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
   assert.equal(runtimeValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
@@ -150,6 +162,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(projectValues.ENGINE_CODEX_MAX_SUBAGENTS_PER_SESSION, '5');
   assert.equal(projectValues.ENGINE_MIN_FREE_STORAGE_GB, '18.5');
   assert.equal(projectValues.ENGINE_IGNORE_LOW_STORAGE, 'true');
+  assert.equal(projectValues.BACKEND_AUTO_RESUME_FAILED_SCANS, 'true');
   assert.equal(projectValues.ENGINE_MEMORY_RESERVE_GB, '2.5');
   assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_MB, '1792');
   assert.equal(projectValues.ENGINE_SCAN_RUNNER_MEMORY_RESERVATION_MB, '768');
@@ -165,6 +178,7 @@ test('runtime setting updates apply live and persist without overwriting unrelat
   assert.equal(result.settings.codexMaxSubagentsPerSession.value, 5);
   assert.equal(result.settings.minFreeStorageGb.value, 18.5);
   assert.equal(result.settings.ignoreLowStorage.value, true);
+  assert.equal(result.settings.autoResumeFailedScans.value, true);
   assert.equal(result.settings.memoryReserveGb.value, 2.5);
   assert.equal(result.settings.scanRunnerMemoryMb.value, 1792);
   assert.equal(result.settings.scanRunnerMemoryReservationMb.value, 768);
@@ -231,6 +245,10 @@ test('runtime setting validation rejects unknown, fractional, and out-of-range v
     ignoreLowStorage: true,
   });
   assert.throws(() => validateRuntimeSettingsPatch({ ignoreLowStorage: 'true' }), ValidationError);
+  assert.deepEqual(validateRuntimeSettingsPatch({ autoResumeFailedScans: true }), {
+    autoResumeFailedScans: true,
+  });
+  assert.throws(() => validateRuntimeSettingsPatch({ autoResumeFailedScans: 'true' }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 'not-a-number' }), ValidationError);
   assert.throws(() => validateRuntimeSettingsPatch({ minFreeStorageGb: 1025 }), ValidationError);
   assert.deepEqual(

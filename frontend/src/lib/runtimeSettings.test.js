@@ -12,6 +12,7 @@ const payload = {
     codexMaxSubagentsPerSession: { value: 5, min: 1, max: 5 },
     minFreeStorageGb: { value: 20, min: 0, max: 1024, step: 0.1, type: 'number' },
     ignoreLowStorage: { value: false, type: 'boolean', defaultValue: false },
+    autoResumeFailedScans: { value: false, type: 'boolean', defaultValue: false },
     memoryReserveGb: { value: 2, min: 0, max: 1024, step: 0.1, type: 'number' },
     scanRunnerMemoryMb: { value: 1536, min: 0, max: 1048576 },
     scanRunnerMemoryReservationMb: { value: 1536, min: 0, max: 1048576 },
@@ -33,6 +34,7 @@ describe('runtime settings form helpers', () => {
       codexMaxSubagentsPerSession: '5',
       minFreeStorageGb: '20',
       ignoreLowStorage: false,
+      autoResumeFailedScans: false,
       memoryReserveGb: '2',
       scanRunnerMemoryMb: '1536',
       scanRunnerMemoryReservationMb: '1536',
@@ -61,6 +63,15 @@ describe('runtime settings form helpers', () => {
         autoscaleScanWorkersOnProviderCapacity: false,
       })
     ).toEqual({ autoscaleScanWorkersOnProviderCapacity: false });
+  });
+
+  it('returns a changed failed-scan auto-resume toggle', () => {
+    expect(
+      runtimeSettingsPatch(payload, {
+        ...runtimeSettingsDraft(payload),
+        autoResumeFailedScans: true,
+      })
+    ).toEqual({ autoResumeFailedScans: true });
   });
 
   it('accepts a fractional minimum-free-storage threshold', () => {

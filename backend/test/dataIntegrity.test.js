@@ -638,6 +638,7 @@ test('failed scans resume through pending and establish a new error-history boun
   assert.equal(calls[1].data.status, 'pending');
   assert.equal(calls[1].data.reasoning, Prisma.DbNull);
   assert.ok(calls[1].data.lastResumedAt instanceof Date);
+  assert.deepEqual(Object.keys(calls[1].data).sort(), ['lastResumedAt', 'reasoning', 'status']);
 });
 
 test('scan status updates accept only user-owned lifecycle transitions', async () => {
