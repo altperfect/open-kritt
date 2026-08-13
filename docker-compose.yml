@@ -30,6 +30,14 @@ services:
       BACKEND_HOST: 0.0.0.0
       BACKEND_CORS_ORIGINS: ${BACKEND_CORS_ORIGINS:-}
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
+      HTTP_PROXY: ${OPEN_KRITT_HTTP_PROXY:-}
+      HTTPS_PROXY: ${OPEN_KRITT_HTTPS_PROXY:-}
+      ALL_PROXY: ${OPEN_KRITT_ALL_PROXY:-}
+      NO_PROXY: ${OPEN_KRITT_NO_PROXY:-}
+      http_proxy: ${OPEN_KRITT_HTTP_PROXY:-}
+      https_proxy: ${OPEN_KRITT_HTTPS_PROXY:-}
+      all_proxy: ${OPEN_KRITT_ALL_PROXY:-}
+      no_proxy: ${OPEN_KRITT_NO_PROXY:-}
       # Raw environment keys stay in the engine. The backend receives non-secret
       # presence flags and manages the shared login/key stores used by Accounts.
       OPEN_KRITT_CODEX_API_KEY_CONFIGURED: '${CODEX_API_KEY:+1}'
@@ -86,6 +94,14 @@ services:
     container_name: open-kritt-engine
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt?schema=public}
+      HTTP_PROXY: ${OPEN_KRITT_HTTP_PROXY:-}
+      HTTPS_PROXY: ${OPEN_KRITT_HTTPS_PROXY:-}
+      ALL_PROXY: ${OPEN_KRITT_ALL_PROXY:-}
+      NO_PROXY: ${OPEN_KRITT_NO_PROXY:-}
+      http_proxy: ${OPEN_KRITT_HTTP_PROXY:-}
+      https_proxy: ${OPEN_KRITT_HTTPS_PROXY:-}
+      all_proxy: ${OPEN_KRITT_ALL_PROXY:-}
+      no_proxy: ${OPEN_KRITT_NO_PROXY:-}
       ENGINE_DATA_DIR: ${ENGINE_DATA_DIR:-/data}
       ENGINE_MIN_FREE_STORAGE_GB: ${ENGINE_MIN_FREE_STORAGE_GB:-20}
       ENGINE_IGNORE_LOW_STORAGE: ${ENGINE_IGNORE_LOW_STORAGE:-false}
@@ -172,6 +188,14 @@ services:
       - '${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}:${EXECUTOR_VIEW_PORT:-8090}:8090'
     environment:
       EXECUTOR_VIEW_DATABASE_URL: ${EXECUTOR_VIEW_DATABASE_URL:-postgresql://open_kritt:open_kritt_password@db:5432/open_kritt}
+      HTTP_PROXY: ${OPEN_KRITT_HTTP_PROXY:-}
+      HTTPS_PROXY: ${OPEN_KRITT_HTTPS_PROXY:-}
+      ALL_PROXY: ${OPEN_KRITT_ALL_PROXY:-}
+      NO_PROXY: ${OPEN_KRITT_NO_PROXY:-}
+      http_proxy: ${OPEN_KRITT_HTTP_PROXY:-}
+      https_proxy: ${OPEN_KRITT_HTTPS_PROXY:-}
+      all_proxy: ${OPEN_KRITT_ALL_PROXY:-}
+      no_proxy: ${OPEN_KRITT_NO_PROXY:-}
       EXECUTOR_VIEW_HOST: 0.0.0.0
       EXECUTOR_VIEW_PORT: 8090
       EXECUTOR_VIEW_PUBLISHED_BIND_ADDRESS: ${EXECUTOR_VIEW_BIND_ADDRESS:-127.0.0.1}

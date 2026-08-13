@@ -293,6 +293,18 @@ test('Codex weekly usage starter sends exactly 100 random characters through the
   let invocation;
   const manager = new AccountLoginManager({
     codexAccountsRoot: accountsRoot,
+    environment: {
+      PATH: '/bin',
+      DATABASE_URL: 'must-not-leak',
+      HTTP_PROXY: 'http://proxy.example.test:8080',
+      HTTPS_PROXY: 'http://proxy.example.test:8080',
+      ALL_PROXY: 'http://proxy.example.test:8080',
+      NO_PROXY: 'db,executor-view',
+      http_proxy: 'http://proxy.example.test:8080',
+      https_proxy: 'http://proxy.example.test:8080',
+      all_proxy: 'http://proxy.example.test:8080',
+      no_proxy: 'db,executor-view',
+    },
     spawnProcess(command, args, options) {
       invocation = { command, args, options };
       const child = new EventEmitter();
@@ -322,6 +334,14 @@ test('Codex weekly usage starter sends exactly 100 random characters through the
   assert.equal(invocation.options.env.CODEX_HOME, accountHome);
   assert.equal(invocation.options.env.HOME, '/tmp');
   assert.equal(invocation.options.env.DATABASE_URL, undefined);
+  assert.equal(invocation.options.env.HTTP_PROXY, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.HTTPS_PROXY, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.ALL_PROXY, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.http_proxy, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.https_proxy, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.all_proxy, 'http://proxy.example.test:8080');
+  assert.equal(invocation.options.env.NO_PROXY, 'db,executor-view');
+  assert.equal(invocation.options.env.no_proxy, 'db,executor-view');
   assert.equal(invocation.options.cwd, '/tmp');
 });
 

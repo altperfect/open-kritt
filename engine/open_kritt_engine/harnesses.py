@@ -857,6 +857,14 @@ def _scan_docker_command(
         "SSL_CERT_FILE",
         "SSL_CERT_DIR",
         "NODE_EXTRA_CA_CERTS",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
     ]
 
     docker_cmd = [

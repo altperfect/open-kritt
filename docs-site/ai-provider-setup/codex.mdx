@@ -44,6 +44,29 @@ If Codex is already signed in on the host and stores a readable file at
 the project login directory. A login held only in an operating-system keychain cannot be
 imported this way; use the guided device flow instead.
 
+## Route container traffic through mgraftcp (Linux)
+
+A host alias such as `codex='mgraftcp codex'` does not affect open·kritt's Codex
+processes because they run inside Docker. If this machine needs mgraftcp to reach Codex,
+start the stack with:
+
+```bash
+./kritt start --mgraftcp
+```
+
+This requires `mgraftcp` in the host `PATH` and Docker's standard `docker0` bridge. For
+the lifetime of the attached stack, the CLI runs a small authenticated HTTPS CONNECT
+bridge on `docker0` under mgraftcp and points the open·kritt containers at it. The bridge
+credentials are temporary and are not written to `.env`; stopping the CLI also stops the
+bridge. It permits only public IPv4 HTTPS destinations and overrides `NO_PROXY` with the
+stack's internal service names while active, so provider traffic cannot bypass the route.
+
+For a nonstandard Docker network or an existing proxy, set `OPEN_KRITT_HTTPS_PROXY` (and,
+when needed, `OPEN_KRITT_HTTP_PROXY` or `OPEN_KRITT_ALL_PROXY`) in `.env` instead. The proxy
+address must be reachable from containers—host loopback addresses such as `127.0.0.1` are
+not. Set `OPEN_KRITT_NO_PROXY` for `localhost`, `127.0.0.1`, and the internal service names
+`db`, `backend`, `engine`, and `executor-view`.
+
 ## Weekly usage and manual resets
 
 For ChatGPT sign-ins, **Accounts → Codex** shows the weekly reset time when Codex reports a

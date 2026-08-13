@@ -3,9 +3,11 @@ import { EventEmitter } from 'node:events';
 import { chmod, mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 
 import {
+  dockerBridgeAddress,
   ensureEnvFile,
   getSetupStatus,
   importCodexAuth,
@@ -17,10 +19,12 @@ import {
   runStart,
   saveDockerCodexLogin,
   setEnvValue,
+  startMgraftcpConnectProxy,
   syncCodexLoginStatus,
   updateEnvText,
   UserCancelledError,
 } from './kritt-lib.mjs';
+import { createConnectProxy, isPublicAddress, parseConnectTarget } from './kritt-connect-proxy.mjs';
 
 const TEMPLATE = `ENGINE_CODEX_HOME_HOST=./.data/codex
 CODEX_API_KEY=
@@ -60,6 +64,40 @@ function answers({ ask = [], secret = [], confirm = [] } = {}) {
       return confirm.shift();
     },
   };
+}
+
+class FakeSocket extends EventEmitter {
+  constructor() {
+    super();
+    this.destroyed = false;
+    this.output = '';
+    this.writable = true;
+  }
+
+  end(value = '') {
+    this.output += String(value);
+    this.destroyed = true;
+    this.emit('close');
+  }
+
+  destroy() {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.emit('close');
+  }
+
+  pipe(destination) {
+    return destination;
+  }
+
+  setTimeout() {
+    return this;
+  }
+
+  write(value = '') {
+    this.output += String(value);
+    return true;
+  }
 }
 
 async function createProject(t, template = TEMPLATE) {
@@ -556,6 +594,245 @@ test('runCommand forwards an abort signal to its child process', async () => {
   assert.equal(result.signal, 'SIGTERM');
 });
 
+test('runCommand forwards an explicit child environment', async () => {
+  const result = await runCommand(
+    process.execPath,
+    ['-e', "process.exit(process.env.OPEN_KRITT_TEST_PROXY === 'forwarded' ? 0 : 1)"],
+    {
+      env: { ...process.env, OPEN_KRITT_TEST_PROXY: 'forwarded' },
+      stdio: 'ignore',
+    }
+  );
+
+  assert.equal(result.code, 0);
+});
+
+test('mgraftcp proxy helpers select the docker0 IPv4 address', () => {
+  assert.equal(
+    dockerBridgeAddress({
+      docker0: [
+        { address: 'fe80::1', family: 'IPv6' },
+        { address: '172.17.0.1', family: 'IPv4' },
+      ],
+    }),
+    '172.17.0.1'
+  );
+  assert.equal(dockerBridgeAddress({ eth0: [{ address: '192.0.2.1', family: 'IPv4' }] }), null);
+});
+
+test('CONNECT proxy accepts only authenticated public HTTPS targets', async () => {
+  const token = 't'.repeat(32);
+  const proxy = createConnectProxy({
+    token,
+    lookup: async () => [{ address: '169.254.169.254', family: 4 }],
+    connect: () => assert.fail('private destinations must not be connected'),
+  });
+  assert.equal(proxy.server.maxConnections, 128);
+  const unauthenticated = new FakeSocket();
+  proxy.server.emit('connect', { headers: {}, url: 'chatgpt.com:443' }, unauthenticated, Buffer.alloc(0));
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  assert.match(unauthenticated.output, /^HTTP\/1\.1 407 Proxy Authentication Required/);
+
+  const authorization = Buffer.from(`open-kritt:${token}`).toString('base64');
+  const privateTarget = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    {
+      headers: { 'proxy-authorization': `Basic ${authorization}` },
+      url: 'metadata.invalid:443',
+    },
+    privateTarget,
+    Buffer.alloc(0)
+  );
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  assert.match(privateTarget.output, /^HTTP\/1\.1 403 Forbidden/);
+});
+
+test('CONNECT target and public-address validation reject proxy escape routes', () => {
+  assert.deepEqual(parseConnectTarget('chatgpt.com:443'), { hostname: 'chatgpt.com', port: 443 });
+  assert.deepEqual(parseConnectTarget('[2606:4700:4700::1111]:443'), {
+    hostname: '2606:4700:4700::1111',
+    port: 443,
+  });
+  for (const target of ['chatgpt.com:80', 'user@chatgpt.com:443', 'chatgpt.com:443/path']) {
+    assert.throws(() => parseConnectTarget(target));
+  }
+  for (const address of [
+    '127.0.0.1',
+    '10.0.0.1',
+    '169.254.169.254',
+    '192.168.1.1',
+    '::1',
+    'fc00::1',
+    'fe80::1',
+    '::ffff:127.0.0.1',
+    '2001:db8::1',
+    '2002:7f00:1::1',
+    '2606:4700:4700::1111',
+  ]) {
+    assert.equal(isPublicAddress(address), false, address);
+  }
+  assert.equal(isPublicAddress('8.8.8.8'), true);
+});
+
+test('CONNECT proxy caps pending lookups and does not dial after an early client disconnect', async () => {
+  const token = 't'.repeat(32);
+  const authorization = Buffer.from(`open-kritt:${token}`).toString('base64');
+  let finishLookup;
+  let connectCalled = false;
+  const proxy = createConnectProxy({
+    token,
+    maxConnections: 1,
+    lookup: () => new Promise((resolveLookup) => (finishLookup = resolveLookup)),
+    connect: () => {
+      connectCalled = true;
+      return new FakeSocket();
+    },
+  });
+  const firstClient = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    { headers: { 'proxy-authorization': `Basic ${authorization}` }, url: 'chatgpt.com:443' },
+    firstClient,
+    Buffer.alloc(0)
+  );
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+
+  const secondClient = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    { headers: { 'proxy-authorization': `Basic ${authorization}` }, url: 'chatgpt.com:443' },
+    secondClient,
+    Buffer.alloc(0)
+  );
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  assert.match(secondClient.output, /^HTTP\/1\.1 503 Service Unavailable/);
+
+  firstClient.destroy();
+  finishLookup([{ address: '8.8.8.8', family: 4 }]);
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  assert.equal(connectCalled, false);
+});
+
+test('CONNECT proxy bounds DNS resolution time', async () => {
+  const token = 't'.repeat(32);
+  const authorization = Buffer.from(`open-kritt:${token}`).toString('base64');
+  const proxy = createConnectProxy({
+    token,
+    dnsTimeoutMs: 10,
+    lookup: () => new Promise(() => {}),
+    connect: () => assert.fail('timed-out destinations must not be connected'),
+  });
+  const client = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    { headers: { 'proxy-authorization': `Basic ${authorization}` }, url: 'chatgpt.com:443' },
+    client,
+    Buffer.alloc(0)
+  );
+
+  await new Promise((resolveWait) => setTimeout(resolveWait, 30));
+  assert.match(client.output, /^HTTP\/1\.1 502 Bad Gateway/);
+});
+
+test('CONNECT proxy tears down an upstream socket when the client leaves during connect', async () => {
+  const token = 't'.repeat(32);
+  const authorization = Buffer.from(`open-kritt:${token}`).toString('base64');
+  const upstream = new FakeSocket();
+  const proxy = createConnectProxy({
+    token,
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    connect: () => upstream,
+  });
+  const client = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    { headers: { 'proxy-authorization': `Basic ${authorization}` }, url: 'chatgpt.com:443' },
+    client,
+    Buffer.alloc(0)
+  );
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  client.destroy();
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+  assert.equal(upstream.destroyed, true);
+});
+
+test('CONNECT proxy establishes a tunnel and couples both socket lifecycles', async () => {
+  const token = 't'.repeat(32);
+  const authorization = Buffer.from(`open-kritt:${token}`).toString('base64');
+  const upstream = new FakeSocket();
+  const proxy = createConnectProxy({
+    token,
+    lookup: async () => [{ address: '8.8.8.8', family: 4 }],
+    connect: () => {
+      queueMicrotask(() => upstream.emit('connect'));
+      return upstream;
+    },
+  });
+  const client = new FakeSocket();
+  proxy.server.emit(
+    'connect',
+    { headers: { 'proxy-authorization': `Basic ${authorization}` }, url: 'chatgpt.com:443' },
+    client,
+    Buffer.alloc(0)
+  );
+  await new Promise((resolveTurn) => setImmediate(resolveTurn));
+
+  assert.match(client.output, /^HTTP\/1\.1 200 Connection Established/);
+  upstream.destroy();
+  assert.equal(client.destroyed, true);
+});
+
+test('mgraftcp bridge launches the relay with private startup configuration', async () => {
+  const proxyChild = new EventEmitter();
+  proxyChild.stdout = new PassThrough();
+  proxyChild.stdin = new PassThrough();
+  proxyChild.kill = () => true;
+  proxyChild.stdin.once('finish', () => proxyChild.emit('close', 0, null));
+  const invocations = [];
+
+  const starting = startMgraftcpConnectProxy({
+    rootDir: '/project',
+    interfaces: {},
+    environment: { PATH: '/bin' },
+    spawnProcess(command, args, options) {
+      invocations.push({ args, command, options });
+      if (command === 'docker') {
+        const inspectChild = new EventEmitter();
+        inspectChild.stdout = new PassThrough();
+        queueMicrotask(() => {
+          inspectChild.stdout.write('172.17.0.1\n');
+          inspectChild.emit('close', 0, null);
+        });
+        return inspectChild;
+      }
+      queueMicrotask(() => proxyChild.stdout.write('{"type":"ready","port":43123}\n'));
+      return proxyChild;
+    },
+  });
+
+  const proxy = await starting;
+  assert.deepEqual(invocations[0].args, [
+    'network',
+    'inspect',
+    'bridge',
+    '--format',
+    '{{(index .IPAM.Config 0).Gateway}}',
+  ]);
+  const invocation = invocations[1];
+  assert.equal(invocation.command, 'mgraftcp');
+  assert.deepEqual(invocation.args, [process.execPath, '/project/scripts/kritt-connect-proxy.mjs']);
+  assert.equal(invocation.options.env.PATH, '/bin');
+  assert.equal(invocation.options.env.OPEN_KRITT_CONNECT_PROXY_BIND, '172.17.0.1');
+  assert.match(invocation.options.env.OPEN_KRITT_CONNECT_PROXY_TOKEN, /^[a-f0-9]{64}$/);
+  assert.equal(
+    proxy.url,
+    `http://open-kritt:${invocation.options.env.OPEN_KRITT_CONNECT_PROXY_TOKEN}@172.17.0.1:43123`
+  );
+  assert.equal(JSON.stringify(invocation.args).includes(invocation.options.env.OPEN_KRITT_CONNECT_PROXY_TOKEN), false);
+  assert.deepEqual(await proxy.stop(), { code: 0, error: null, signal: null });
+});
+
 test('start blocks GitHub-only configuration and launches Compose with model access', async (t) => {
   const project = await createProject(t);
   const io = testIo();
@@ -582,6 +859,112 @@ test('start blocks GitHub-only configuration and launches Compose with model acc
     { command: 'docker', args: ['compose', 'up', '--build'], options: { cwd: project.rootDir, stdio: 'inherit' } },
   ]);
   assert.equal((await stat(join(project.rootDir, '.data', 'codex-accounts', 'cli', '.codex'))).mode & 0o777, 0o700);
+});
+
+test('start with mgraftcp injects only an ephemeral Compose proxy and cleans it up', async (t) => {
+  const project = await createProject(t, `${TEMPLATE}NO_PROXY=custom.test\n`);
+  await ensureEnvFile(project);
+  await setEnvValue(project.envFile, 'OPENAI_API_KEY', 'sk-example');
+  const originalEnvironment = await readFile(project.envFile, 'utf8');
+  const proxyUrl = 'http://open-kritt:temporary-token@172.17.0.1:43123';
+  let stopped = false;
+  let invocation;
+
+  const exitCode = await runCli(['start', '--mgraftcp'], {
+    ...project,
+    environment: {
+      ...process.env,
+      ALL_PROXY: 'socks5://direct-fallback.invalid:1080',
+      HTTP_PROXY: 'http://direct-fallback.invalid:8080',
+      NO_PROXY: '*',
+      all_proxy: 'socks5://direct-fallback.invalid:1080',
+      http_proxy: 'http://direct-fallback.invalid:8080',
+      no_proxy: 'chatgpt.com',
+    },
+    io: testIo(),
+    proxyStarter: async () => ({
+      exitPromise: new Promise(() => {}),
+      url: proxyUrl,
+      stop: async () => (stopped = true),
+    }),
+    runner: async (command, args, options) => {
+      invocation = { args, command, options };
+      return { code: 0 };
+    },
+  });
+
+  assert.equal(exitCode, 0);
+  assert.equal(stopped, true);
+  assert.equal(invocation.command, 'docker');
+  assert.deepEqual(invocation.args, ['compose', 'up', '--build']);
+  for (const key of ['OPEN_KRITT_HTTP_PROXY', 'OPEN_KRITT_HTTPS_PROXY', 'OPEN_KRITT_ALL_PROXY']) {
+    assert.equal(invocation.options.env[key], proxyUrl);
+  }
+  assert.match(invocation.options.env.OPEN_KRITT_NO_PROXY, /(?:^|,)db(?:,|$)/);
+  assert.doesNotMatch(invocation.options.env.OPEN_KRITT_NO_PROXY, /\*|chatgpt\.com|custom\.test/);
+  const savedEnvironment = await readFile(project.envFile, 'utf8');
+  assert.equal(savedEnvironment.includes(proxyUrl), false);
+  assert.equal(savedEnvironment.includes('temporary-token'), false);
+  assert.equal(originalEnvironment.includes('temporary-token'), false);
+});
+
+test('start stops Compose if its mgraftcp route exits', async (t) => {
+  const project = await createProject(t);
+  await ensureEnvFile(project);
+  await setEnvValue(project.envFile, 'OPENAI_API_KEY', 'sk-example');
+  const io = testIo();
+  let exitProxy;
+  let stopped = false;
+  let markRunnerStarted;
+  const runnerStarted = new Promise((resolveStarted) => (markRunnerStarted = resolveStarted));
+
+  const running = runStart({
+    ...project,
+    io,
+    mgraftcp: true,
+    proxyStarter: async () => ({
+      exitPromise: new Promise((resolveExit) => (exitProxy = resolveExit)),
+      url: 'http://open-kritt:temporary-token@172.17.0.1:43123',
+      stop: async () => (stopped = true),
+    }),
+    runner: async (_command, _args, options) => {
+      markRunnerStarted();
+      return new Promise((resolveRun) =>
+        options.signal.addEventListener('abort', () => resolveRun({ code: 143 }), { once: true })
+      );
+    },
+  });
+  await runnerStarted;
+  exitProxy({ code: 1, error: null, signal: null });
+
+  assert.equal(await running, 1);
+  assert.equal(stopped, true);
+  assert.match(io.error.text, /route stopped.*Docker stack was stopped/);
+});
+
+test('start reports mgraftcp startup failures without launching Compose', async (t) => {
+  const project = await createProject(t);
+  await ensureEnvFile(project);
+  await setEnvValue(project.envFile, 'OPENAI_API_KEY', 'sk-example');
+  const io = testIo();
+  let launched = false;
+
+  const exitCode = await runStart({
+    ...project,
+    io,
+    mgraftcp: true,
+    proxyStarter: async () => {
+      throw new Error('mgraftcp was not found in PATH.');
+    },
+    runner: async () => {
+      launched = true;
+      return { code: 0 };
+    },
+  });
+
+  assert.equal(exitCode, 1);
+  assert.equal(launched, false);
+  assert.match(io.error.text, /Could not start.*mgraftcp was not found/);
 });
 
 test('start reports how to repair a Codex home parent left unwritable by Docker', async (t) => {
@@ -642,4 +1025,8 @@ test('help is available for subcommands and unknown commands fail clearly', asyn
   const unknownIo = testIo();
   assert.equal(await runCli(['unknown'], { ...project, io: unknownIo }), 1);
   assert.match(unknownIo.error.text, /Unknown command/);
+
+  const startIo = testIo();
+  assert.equal(await runCli(['start', '--unknown'], { ...project, io: startIo }), 1);
+  assert.match(startIo.error.text, /Unknown start option: --unknown/);
 });

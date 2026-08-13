@@ -23,6 +23,16 @@ const LOGIN_PROVIDERS = new Set(['codex', 'claude']);
 const SESSION_TIMEOUT_MS = 20 * 60 * 1000;
 const MAX_CAPTURED_OUTPUT = 32 * 1024;
 const ACCOUNT_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
+const OUTBOUND_PROXY_ENV_KEYS = [
+  'HTTP_PROXY',
+  'HTTPS_PROXY',
+  'ALL_PROXY',
+  'NO_PROXY',
+  'http_proxy',
+  'https_proxy',
+  'all_proxy',
+  'no_proxy',
+];
 const ENGINE_RUNTIME_CONFIG_PATH =
   process.env.OPEN_KRITT_ENGINE_RUNTIME_CONFIG_PATH || '/engine-data/engine-runtime.env';
 const CODEX_RUNTIME_ACCOUNTS_ROOT = process.env.OPEN_KRITT_CODEX_RUNTIME_ACCOUNTS_DIR || '/codex-accounts';
@@ -289,6 +299,7 @@ export class AccountLoginManager {
     claudeRuntimeAccountsRoot = CLAUDE_RUNTIME_ACCOUNTS_ROOT,
     runtimeConfigPath = ENGINE_RUNTIME_CONFIG_PATH,
     environmentFilePath = PROJECT_ENV_FILE_PATH,
+    environment = process.env,
     timeoutMs = SESSION_TIMEOUT_MS,
   } = {}) {
     this.spawnProcess = spawnProcess;
@@ -302,6 +313,7 @@ export class AccountLoginManager {
     this.claudeRuntimeAccountsRoot = claudeRuntimeAccountsRoot;
     this.runtimeConfigPath = runtimeConfigPath;
     this.environmentFilePath = environmentFilePath;
+    this.environment = environment;
     this.timeoutMs = timeoutMs;
     this.sessions = new Map();
   }
@@ -345,7 +357,7 @@ export class AccountLoginManager {
 
     let command;
     let args;
-    let env = { ...process.env, NO_COLOR: '1', TERM: 'dumb' };
+    let env = { ...this.environment, NO_COLOR: '1', TERM: 'dumb' };
     if (provider === 'codex') {
       if (reloginTarget) {
         session.codexHome = reloginTarget.home;
@@ -481,13 +493,16 @@ export class AccountLoginManager {
     }
 
     const env = {
-      PATH: process.env.PATH || '',
+      PATH: this.environment.PATH || '',
       HOME: '/tmp',
       CODEX_HOME: home,
       NO_COLOR: '1',
       TERM: 'dumb',
-      ...(process.env.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: process.env.NODE_EXTRA_CA_CERTS } : {}),
-      ...(process.env.SSL_CERT_FILE ? { SSL_CERT_FILE: process.env.SSL_CERT_FILE } : {}),
+      ...(this.environment.NODE_EXTRA_CA_CERTS ? { NODE_EXTRA_CA_CERTS: this.environment.NODE_EXTRA_CA_CERTS } : {}),
+      ...(this.environment.SSL_CERT_FILE ? { SSL_CERT_FILE: this.environment.SSL_CERT_FILE } : {}),
+      ...Object.fromEntries(
+        OUTBOUND_PROXY_ENV_KEYS.flatMap((key) => (this.environment[key] ? [[key, this.environment[key]]] : []))
+      ),
     };
     const prompt = randomBytes(50).toString('hex');
     try {

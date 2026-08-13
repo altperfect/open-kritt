@@ -1,8 +1,9 @@
 import { access, chmod, copyFile, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { constants } from 'node:fs';
 import { spawn } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
-import { homedir, tmpdir } from 'node:os';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
+import { homedir, networkInterfaces, tmpdir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 
@@ -15,6 +16,10 @@ const CODEX_LOGIN_CONTAINER_USER_HOME = '/open-kritt-login';
 const CODEX_LOGIN_CONTAINER_HOME = `${CODEX_LOGIN_CONTAINER_USER_HOME}/.codex`;
 const CODEX_LOGIN_CONTAINER_BOOTSTRAP =
   'umask 077; mkdir -p "$HOME" "$CODEX_HOME" && chmod 700 "$HOME" "$CODEX_HOME" && exec codex "$@"';
+const DOCKER_BRIDGE_INSPECT_TIMEOUT_MS = 10_000;
+const MGRAFTCP_PROXY_START_TIMEOUT_MS = 10_000;
+const MGRAFTCP_PROXY_STOP_TIMEOUT_MS = 2_000;
+const KRITT_NO_PROXY_HOSTS = ['localhost', '127.0.0.1', '::1', 'db', 'backend', 'engine', 'executor-view', 'frontend'];
 
 export const ENVIRONMENT_ITEMS = [
   {
@@ -745,9 +750,190 @@ function createPrompter(io) {
   };
 }
 
+export function dockerBridgeAddress(interfaces = networkInterfaces()) {
+  const candidates = interfaces.docker0 || [];
+  const address = candidates.find((candidate) => candidate.family === 'IPv4' || candidate.family === 4)?.address;
+  return isIP(address || '') === 4 ? address : null;
+}
+
+function waitForChildExit(child) {
+  return new Promise((resolveExit) => {
+    let childError = null;
+    child.on('error', (error) => (childError = error));
+    child.once('close', (code, signal) => resolveExit({ code, error: childError, signal }));
+  });
+}
+
+function inspectDockerBridgeAddress({ rootDir, spawnProcess, environment }) {
+  return (async () => {
+    let child;
+    try {
+      child = spawnProcess(
+        'docker',
+        ['network', 'inspect', 'bridge', '--format', '{{(index .IPAM.Config 0).Gateway}}'],
+        {
+          cwd: rootDir,
+          env: environment,
+          stdio: ['ignore', 'pipe', 'ignore'],
+        }
+      );
+    } catch {
+      return null;
+    }
+    let output = '';
+    child.stdout?.on('data', (chunk) => (output = `${output}${String(chunk)}`.slice(-1024)));
+    const exitPromise = waitForChildExit(child);
+    let result = await waitForChildExitOrTimeout(exitPromise, DOCKER_BRIDGE_INSPECT_TIMEOUT_MS);
+    if (!result) result = await terminateChild(child, exitPromise, MGRAFTCP_PROXY_STOP_TIMEOUT_MS);
+    const address = output.trim();
+    return result?.code === 0 && isIP(address) === 4 ? address : null;
+  })();
+}
+
+function waitForChildExitOrTimeout(exitPromise, milliseconds) {
+  return new Promise((resolveWait) => {
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolveWait(result);
+    };
+    const timeout = setTimeout(() => finish(null), milliseconds);
+    exitPromise.then(finish);
+  });
+}
+
+async function terminateChild(child, exitPromise, timeoutMs) {
+  child.kill?.('SIGTERM');
+  let result = await waitForChildExitOrTimeout(exitPromise, timeoutMs);
+  if (!result) {
+    child.kill?.('SIGKILL');
+    result = await waitForChildExitOrTimeout(exitPromise, timeoutMs);
+  }
+  if (!result) {
+    child.stdin?.destroy?.();
+    child.stdout?.destroy?.();
+    child.stderr?.destroy?.();
+    child.unref?.();
+  }
+  return result;
+}
+
+export async function startMgraftcpConnectProxy({
+  rootDir,
+  spawnProcess = spawn,
+  interfaces = networkInterfaces(),
+  environment = process.env,
+  startTimeoutMs = MGRAFTCP_PROXY_START_TIMEOUT_MS,
+} = {}) {
+  const bindHost =
+    dockerBridgeAddress(interfaces) || (await inspectDockerBridgeAddress({ rootDir, spawnProcess, environment }));
+  if (!bindHost) {
+    throw new Error(
+      'Docker bridge interface docker0 is unavailable. Configure a container-reachable OPEN_KRITT_HTTPS_PROXY instead.'
+    );
+  }
+
+  const token = randomBytes(32).toString('hex');
+  let child;
+  try {
+    child = spawnProcess('mgraftcp', [process.execPath, join(rootDir, 'scripts', 'kritt-connect-proxy.mjs')], {
+      cwd: rootDir,
+      env: {
+        ...environment,
+        OPEN_KRITT_CONNECT_PROXY_BIND: bindHost,
+        OPEN_KRITT_CONNECT_PROXY_TOKEN: token,
+      },
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+  } catch (error) {
+    throw new Error(`Could not launch mgraftcp: ${error.message}`);
+  }
+  child.stdin?.on('error', () => {});
+  child.stderr?.on('data', () => {});
+
+  const exitPromise = waitForChildExit(child);
+  let stopped = false;
+  const stop = async () => {
+    if (stopped) return exitPromise;
+    stopped = true;
+    child.stdin?.end();
+    let result = await waitForChildExitOrTimeout(exitPromise, MGRAFTCP_PROXY_STOP_TIMEOUT_MS);
+    if (!result) {
+      result = await terminateChild(child, exitPromise, MGRAFTCP_PROXY_STOP_TIMEOUT_MS);
+    }
+    return result;
+  };
+
+  let buffer = '';
+  let ready = false;
+  let readinessCleanup = () => {};
+  const readiness = new Promise((resolveReady, rejectReady) => {
+    const timeout = setTimeout(() => {
+      finish(rejectReady, new Error('Timed out waiting for the mgraftcp route.'));
+    }, startTimeoutMs);
+    const finish = (callback, value) => {
+      if (ready) return;
+      ready = true;
+      clearTimeout(timeout);
+      callback(value);
+    };
+    const onOutput = (chunk) => {
+      buffer = `${buffer}${String(chunk)}`.slice(-16 * 1024);
+      const lines = buffer.split(/\r?\n/);
+      buffer = lines.pop() || '';
+      for (const line of lines) {
+        let message;
+        try {
+          message = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (message?.type === 'ready' && Number.isInteger(message.port) && message.port > 0 && message.port <= 65_535) {
+          finish(resolveReady, message.port);
+          return;
+        }
+      }
+    };
+    child.stdout?.on('data', onOutput);
+    readinessCleanup = () => child.stdout?.removeListener('data', onOutput);
+    child.once('error', (error) => {
+      const detail = error?.code === 'ENOENT' ? 'mgraftcp was not found in PATH.' : 'Could not launch mgraftcp.';
+      finish(rejectReady, new Error(detail));
+    });
+    exitPromise.then((result) => {
+      const detail = result.error?.code === 'ENOENT' ? 'mgraftcp was not found in PATH.' : 'The mgraftcp route exited.';
+      finish(rejectReady, new Error(detail));
+    });
+  });
+
+  let port;
+  try {
+    port = await readiness;
+  } catch (error) {
+    readinessCleanup();
+    await stop();
+    throw error;
+  }
+  readinessCleanup();
+  // Drain any compatibility-wrapper output without surfacing opaque provider data.
+  child.stdout?.on('data', () => {});
+
+  return {
+    exitPromise,
+    stop,
+    url: `http://open-kritt:${token}@${bindHost}:${port}`,
+  };
+}
+
 export async function runCommand(command, args, options = {}) {
   return new Promise((resolveCommand, rejectCommand) => {
-    const child = spawn(command, args, { cwd: options.cwd, stdio: options.stdio || 'inherit' });
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      env: options.env,
+      stdio: options.stdio || 'inherit',
+    });
     const abortSignal = options.signal;
     const removeAbortListener = () => abortSignal?.removeEventListener('abort', onAbort);
     const onAbort = () => {
@@ -1150,11 +1336,14 @@ function setupContext(options = {}) {
   return {
     rootDir,
     envFile: options.envFile || join(rootDir, '.env'),
+    environment: options.environment || process.env,
     templateFile: options.templateFile || join(rootDir, '.env.example'),
     homeDir: options.homeDir || homedir(),
     io,
     prompter: options.prompter || createPrompter(io),
+    proxyStarter: options.proxyStarter || startMgraftcpConnectProxy,
     runner: options.runner || runCommand,
+    spawnProcess: options.spawnProcess || spawn,
   };
 }
 
@@ -1226,16 +1415,62 @@ export async function runStart(options = {}) {
     return 1;
   }
 
+  let proxy = null;
+  let proxyFailed = false;
+  let composeFinished = false;
+  const composeOptions = {
+    cwd: context.rootDir,
+    stdio: 'inherit',
+  };
+  if (options.mgraftcp) {
+    write(context.io, 'Starting a temporary mgraftcp route for container HTTPS traffic.');
+    try {
+      proxy = await context.proxyStarter({
+        environment: context.environment,
+        rootDir: context.rootDir,
+        spawnProcess: context.spawnProcess,
+      });
+    } catch (error) {
+      writeError(context.io, `Could not start the mgraftcp route: ${error.message}`);
+      return 1;
+    }
+    const noProxy = KRITT_NO_PROXY_HOSTS.join(',');
+    composeOptions.env = {
+      ...context.environment,
+      OPEN_KRITT_ALL_PROXY: proxy.url,
+      OPEN_KRITT_HTTP_PROXY: proxy.url,
+      OPEN_KRITT_HTTPS_PROXY: proxy.url,
+      OPEN_KRITT_NO_PROXY: noProxy,
+    };
+    const abortController = new AbortController();
+    composeOptions.signal = abortController.signal;
+    proxy.exitPromise.then(() => {
+      if (composeFinished) return;
+      proxyFailed = true;
+      abortController.abort();
+    });
+  }
+
   write(context.io, 'Starting open-kritt. Press Ctrl+C to stop the stack.');
   try {
-    const result = await context.runner('docker', ['compose', 'up', '--build'], {
-      cwd: context.rootDir,
-      stdio: 'inherit',
-    });
+    const result = await context.runner('docker', ['compose', 'up', '--build'], composeOptions);
+    composeFinished = true;
+    if (proxyFailed) {
+      writeError(context.io, 'The mgraftcp route stopped, so the Docker stack was stopped to avoid direct fallback.');
+      return 1;
+    }
     return result.code;
   } catch (error) {
+    composeFinished = true;
+    if (proxyFailed) {
+      writeError(context.io, 'The mgraftcp route stopped, so the Docker stack was stopped to avoid direct fallback.');
+      return 1;
+    }
     writeError(context.io, `${error.message}. Install and start Docker, then try again.`);
     return 1;
+  } finally {
+    composeFinished = true;
+    await proxy?.stop();
   }
 }
 
@@ -1244,7 +1479,7 @@ const HELP = {
 
 Usage:
   ./kritt setup              Configure model access and optional GitHub access
-  ./kritt start              Start the Docker Compose stack
+  ./kritt start [--mgraftcp] Start the Docker Compose stack
   ./kritt help [subcommand]  Show command help
 
 Run ./kritt setup first. It creates .env when needed and never prints credential values.`,
@@ -1259,11 +1494,13 @@ The Codex and Claude login flows use temporary engine containers and persist the
 The recommended Codex flow uses device authentication (no localhost callback) and saves auth.json with host-user ownership and private permissions.
 
 Run ./kritt as your normal user, not with sudo. Use Import local login instead of copying auth.json by hand.`,
-  start: `Usage: ./kritt start
+  start: `Usage: ./kritt start [--mgraftcp]
 
 Checks that .env and at least one model provider credential or Codex login are configured, then runs:
 
   docker compose up --build
+
+On Linux, --mgraftcp starts an authenticated host relay under mgraftcp and routes container HTTPS through it. This requires mgraftcp in PATH and the standard docker0 bridge.
 
 The process stays attached to Compose; press Ctrl+C to stop the stack.`,
 };
@@ -1286,8 +1523,12 @@ export async function runCli(argv, options = {}) {
     if (command === 'help' || command === '--help' || command === '-h') return showHelp(args[0], io);
     if (command === 'setup')
       return args.includes('--help') || args.includes('-h') ? showHelp('setup', io) : runSetup({ ...options, io });
-    if (command === 'start')
-      return args.includes('--help') || args.includes('-h') ? showHelp('start', io) : runStart({ ...options, io });
+    if (command === 'start') {
+      if (args.includes('--help') || args.includes('-h')) return showHelp('start', io);
+      const unknown = args.filter((argument) => argument !== '--mgraftcp');
+      if (unknown.length) throw new Error(`Unknown start option: ${unknown[0]}`);
+      return runStart({ ...options, io, mgraftcp: args.includes('--mgraftcp') });
+    }
     writeError(io, `Unknown command: ${command}`);
     return showHelp(undefined, io) || 1;
   } catch (error) {

@@ -155,6 +155,44 @@ def test_snapshot_scan_runner_uses_image_workspace_without_host_workspace_mount(
     assert command[command.index("open-kritt-workspace-snapshot:test") + 1 :][:2] == ["codex", "exec"]
 
 
+def test_scan_runner_only_inherits_allowlisted_proxy_environment(monkeypatch, tmp_path):
+    data_dir = tmp_path / "engine-data"
+    host_data_dir = tmp_path / "host-engine-data"
+    repo_dir = data_dir / "jobs" / "metadata-778" / "workspace"
+    home_dir = data_dir / "jobs" / "metadata-778" / "home"
+    repo_dir.mkdir(parents=True)
+    home_dir.mkdir(parents=True)
+    monkeypatch.setenv("ENGINE_DATA_DIR", str(data_dir))
+    monkeypatch.setenv("ENGINE_DOCKER_DATA_DIR_HOST", str(host_data_dir))
+    monkeypatch.setattr(harnesses.shutil, "which", lambda name: "docker" if name == "docker" else None)
+    proxy_keys = {
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    }
+
+    command = REAL_SCAN_DOCKER_COMMAND(
+        ["codex", "exec", "-"],
+        str(repo_dir),
+        {
+            "HOME": str(home_dir),
+            **{key: f"value-for-{key}" for key in proxy_keys},
+            "UNRELATED_SECRET": "must-not-be-inherited",
+        },
+    )
+
+    inherited_keys = {
+        command[index + 1] for index, value in enumerate(command) if value == "--env" and "=" not in command[index + 1]
+    }
+    assert proxy_keys <= inherited_keys
+    assert "UNRELATED_SECRET" not in inherited_keys
+
+
 def test_prewarm_rebuilds_previous_marker_version_instead_of_promoting_it(monkeypatch, tmp_path):
     stale_base = tmp_path / "cache" / "owner__repo@HEAD"
     stale_repo = stale_base / "owner__repo"
