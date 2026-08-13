@@ -1,12 +1,15 @@
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 from open_kritt_engine import repository
+from open_kritt_engine import runtime_config as runtime_config_module
 from open_kritt_engine.config import EngineConfig
 from open_kritt_engine.post_processing import PostProcessor
 from open_kritt_engine.runtime_config import (
     RUNTIME_ENV_ALIASES,
+    ensure_runtime_config_file,
     parse_env_text,
     runtime_bool,
     runtime_int,
@@ -191,6 +194,57 @@ def test_engine_startup_syncs_explicit_env_without_disabling_live_edits(monkeypa
 
     runtime_path.write_text(text.replace("ENGINE_WORKER_COUNT=25", "ENGINE_WORKER_COUNT=3"), encoding="utf-8")
     assert runtime_int("ENGINE_WORKER_COUNT", 25, data_dir=str(data_dir), minimum=0) == 3
+
+
+def test_runtime_config_replacement_preserves_existing_owner_and_mode(monkeypatch, tmp_path):
+    runtime_path = tmp_path / "engine-runtime.env"
+    runtime_path.write_text("ENGINE_WORKER_COUNT=2\n", encoding="utf-8")
+    runtime_path.chmod(0o640)
+    original = runtime_path.stat()
+    real_fstat = runtime_config_module.os.fstat
+    restored_owner = None
+
+    def different_temporary_owner(descriptor):
+        current = real_fstat(descriptor)
+        return SimpleNamespace(st_uid=current.st_uid + 1, st_gid=current.st_gid + 1)
+
+    def record_owner(_descriptor, uid, gid):
+        nonlocal restored_owner
+        restored_owner = (uid, gid)
+
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    monkeypatch.setenv("ENGINE_WORKER_COUNT", "3")
+    monkeypatch.setattr(runtime_config_module.os, "fstat", different_temporary_owner)
+    monkeypatch.setattr(runtime_config_module.os, "fchown", record_owner)
+
+    sync_runtime_config_file(str(tmp_path))
+
+    assert restored_owner == (original.st_uid, original.st_gid)
+    assert stat.S_IMODE(runtime_path.stat().st_mode) == 0o640
+    assert parse_env_text(runtime_path.read_text(encoding="utf-8"))["ENGINE_WORKER_COUNT"] == "3"
+
+
+def test_new_runtime_config_inherits_parent_owner_and_is_private(monkeypatch, tmp_path):
+    original = tmp_path.stat()
+    real_fstat = runtime_config_module.os.fstat
+    restored_owner = None
+
+    def different_temporary_owner(descriptor):
+        current = real_fstat(descriptor)
+        return SimpleNamespace(st_uid=current.st_uid + 1, st_gid=current.st_gid + 1)
+
+    def record_owner(_descriptor, uid, gid):
+        nonlocal restored_owner
+        restored_owner = (uid, gid)
+
+    monkeypatch.delenv("ENGINE_RUNTIME_CONFIG_PATH", raising=False)
+    monkeypatch.setattr(runtime_config_module.os, "fstat", different_temporary_owner)
+    monkeypatch.setattr(runtime_config_module.os, "fchown", record_owner)
+
+    runtime_path = ensure_runtime_config_file(str(tmp_path))
+
+    assert restored_owner == (original.st_uid, original.st_gid)
+    assert stat.S_IMODE(runtime_path.stat().st_mode) == 0o600
 
 
 def test_engine_uses_conservative_worker_default(monkeypatch, tmp_path):

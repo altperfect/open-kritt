@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -73,19 +73,52 @@ test('environment updates preserve a Docker bind-mounted file inode', async (t) 
   );
 });
 
+test('atomic environment updates preserve the existing file owner', async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), 'open-kritt-environment-owner-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const environmentFilePath = join(directory, '.env');
+  await writeFile(environmentFilePath, 'ENGINE_WORKER_COUNT=2\n');
+  const before = await stat(environmentFilePath);
+  let restoredOwner;
+
+  await updateEnvironmentFile(
+    { ENGINE_WORKER_COUNT: '3' },
+    {
+      environmentFilePath,
+      chownFile: async (path, uid, gid) => {
+        restoredOwner = { path, uid, gid };
+      },
+      renameFile: async (source, target) => {
+        assert.deepEqual(restoredOwner, { path: source, uid: before.uid, gid: before.gid });
+        await rename(source, target);
+      },
+    }
+  );
+
+  assert.equal(parseEnvironmentText(await readFile(environmentFilePath, 'utf8')).ENGINE_WORKER_COUNT, '3');
+});
+
 test('new environment files use bare values when quoting is unnecessary', async (t) => {
   const directory = await mkdtemp(join(tmpdir(), 'open-kritt-environment-new-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const environmentFilePath = join(directory, '.env');
+  const directoryOwner = await stat(directory);
+  let restoredOwner;
 
   await updateEnvironmentFile(
     {
       ENGINE_WORKER_COUNT: '4',
       ENGINE_CODEX_HOME: '/root/.codex,/codex-accounts/reviewer/.codex',
     },
-    { environmentFilePath }
+    {
+      environmentFilePath,
+      chownFile: async (_path, uid, gid) => {
+        restoredOwner = { uid, gid };
+      },
+    }
   );
 
+  assert.deepEqual(restoredOwner, { uid: directoryOwner.uid, gid: directoryOwner.gid });
   assert.equal(
     await readFile(environmentFilePath, 'utf8'),
     'ENGINE_WORKER_COUNT=4\nENGINE_CODEX_HOME=/root/.codex,/codex-accounts/reviewer/.codex\n'

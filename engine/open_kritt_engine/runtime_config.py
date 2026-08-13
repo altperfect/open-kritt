@@ -1,5 +1,7 @@
 import math
 import os
+import stat
+import tempfile
 from pathlib import Path
 
 RUNTIME_CONFIG_FILENAME = "engine-runtime.env"
@@ -30,6 +32,38 @@ def runtime_config_path(data_dir: str | None = None) -> Path:
     if raw:
         return Path(raw)
     return Path(data_dir or os.getenv("ENGINE_DATA_DIR", "/data")) / RUNTIME_CONFIG_FILENAME
+
+
+def _replace_runtime_config(path: Path, content: str) -> None:
+    """Atomically replace the config without changing its host-side owner."""
+    try:
+        original = path.stat()
+        mode = stat.S_IMODE(original.st_mode)
+    except FileNotFoundError:
+        original = path.parent.stat()
+        mode = 0o600
+
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent,
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as target:
+            descriptor = -1
+            target.write(content)
+            target.flush()
+            current = os.fstat(target.fileno())
+            if current.st_uid != original.st_uid or current.st_gid != original.st_gid:
+                os.fchown(target.fileno(), original.st_uid, original.st_gid)
+            os.fchmod(target.fileno(), mode)
+            os.fsync(target.fileno())
+        os.replace(temporary, path)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
 
 
 def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
@@ -90,9 +124,7 @@ def ensure_runtime_config_file(data_dir: str | None = None) -> Path:
     ]
     lines.extend(f"{key}={_quote_env_value(value)}" for key, value in values.items())
     lines.append("")
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text("\n".join(lines), encoding="utf-8")
-    os.replace(tmp_path, path)
+    _replace_runtime_config(path, "\n".join(lines))
     return path
 
 
@@ -139,9 +171,7 @@ def sync_runtime_config_file(data_dir: str | None = None) -> Path:
     if updated == original:
         return path
 
-    tmp_path = path.with_suffix(path.suffix + ".tmp")
-    tmp_path.write_text(updated, encoding="utf-8")
-    os.replace(tmp_path, path)
+    _replace_runtime_config(path, updated)
     return path
 
 
