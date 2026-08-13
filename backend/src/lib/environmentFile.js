@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { chmod, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, chown, mkdir, open, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 
 export const PROJECT_ENV_FILE_PATH = process.env.OPEN_KRITT_ENV_FILE_PATH || '';
@@ -63,10 +63,25 @@ function updateEnvironmentText(text, updates) {
   return `${updated.join(newline)}${hasTrailingNewline || updated.length ? newline : ''}`;
 }
 
-async function replaceEnvironmentFile(filePath, content, renameFile = rename) {
+async function replaceEnvironmentFile(filePath, content, { chownFile, renameFile, statFile }) {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
+  let owner;
+  try {
+    owner = await statFile(filePath);
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error;
+    owner = await statFile(dirname(filePath));
+  }
+  // Containers run as root, but these files live on host bind mounts. Apply the
+  // current file (or parent directory) owner before installing a new inode.
   const temporaryPath = join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`);
   await writeFile(temporaryPath, content, { encoding: 'utf8', mode: 0o600 });
+  try {
+    await chownFile(temporaryPath, owner.uid, owner.gid);
+  } catch (error) {
+    await rm(temporaryPath, { force: true });
+    throw error;
+  }
   try {
     await renameFile(temporaryPath, filePath);
   } catch (error) {
@@ -98,7 +113,7 @@ async function replaceEnvironmentFile(filePath, content, renameFile = rename) {
 
 export async function mutateEnvironmentFile(
   mutator,
-  { environmentFilePath = PROJECT_ENV_FILE_PATH, renameFile = rename } = {}
+  { environmentFilePath = PROJECT_ENV_FILE_PATH, chownFile = chown, renameFile = rename, statFile = stat } = {}
 ) {
   if (!environmentFilePath) return null;
   if (typeof mutator !== 'function') throw new TypeError('Environment mutation must be a function.');
@@ -115,7 +130,9 @@ export async function mutateEnvironmentFile(
       return { changed: false, previous: {}, values: previousValues };
     }
     const updated = updateEnvironmentText(text, updates);
-    if (updated !== text) await replaceEnvironmentFile(environmentFilePath, updated, renameFile);
+    if (updated !== text) {
+      await replaceEnvironmentFile(environmentFilePath, updated, { chownFile, renameFile, statFile });
+    }
     return {
       changed: updated !== text,
       previous: Object.fromEntries(
@@ -134,7 +151,7 @@ export async function mutateEnvironmentFile(
 
 export async function updateEnvironmentFile(
   updates,
-  { environmentFilePath = PROJECT_ENV_FILE_PATH, renameFile = rename } = {}
+  { environmentFilePath = PROJECT_ENV_FILE_PATH, chownFile = chown, renameFile = rename, statFile = stat } = {}
 ) {
-  return mutateEnvironmentFile(() => updates, { environmentFilePath, renameFile });
+  return mutateEnvironmentFile(() => updates, { chownFile, environmentFilePath, renameFile, statFile });
 }
