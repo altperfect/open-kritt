@@ -34,11 +34,24 @@ work. Repeated limits use delays of 1, 2, 4, 8, then 10 minutes, capped at 10 mi
 the scan keeps trying at least once every 10 minutes. Authentication, invalid-model, and
 other non-temporary errors still fail normally.
 
+## Automatic failed-scan recovery
+
+**Auto-resume failed scans** under **Settings** is disabled by default. When enabled, the
+backend checks twice per second and moves every scan that has remained `failed` for about
+one second back to `pending`. The engine then continues from completed workflow lineages;
+no browser needs to remain open and no one needs to click **Resume**.
+
+This setting applies only to failed scans. Paused and stopped scans remain where they are,
+and temporary provider limits continue to use the separate retry schedule described
+above. A persistent problem can fail and resume repeatedly, so leave auto-resume disabled
+when repeated attempts could waste provider quota.
+
 ## Resuming a scan
 
 You can **pause** a running scan and **resume** it later. Failed, paused, and stopped scans
 continue from their completed workflow lineages. Completed step results remain available as
-input to later depths; only failed or unfinished work is queued again.
+input to later depths; only failed or unfinished work is queued again. When automatic
+failed-scan recovery is disabled, failed scans remain failed until you resume them here.
 
 <Steps>
   <Step title="Pause">
@@ -46,6 +59,7 @@ input to later depths; only failed or unfinished work is queued again.
   </Step>
   <Step title="Resume">
     Resume a `failed`, `paused`, or `stopped` scan to continue from where it left off.
+    Paused and stopped scans always use this manual action.
   </Step>
 </Steps>
 

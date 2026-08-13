@@ -35,6 +35,40 @@ describe('runtime settings fields', () => {
     expect(html).not.toContain('id="setting-ignoreLowStorage"');
   });
 
+  it('renders failed-scan recovery as a default-off live checkbox', () => {
+    const html = renderToStaticMarkup(
+      <RuntimeSettingsFields
+        data={{
+          settings: {
+            autoResumeFailedScans: {
+              value: false,
+              source: 'default',
+              valid: true,
+              envKey: 'BACKEND_AUTO_RESUME_FAILED_SCANS',
+              type: 'boolean',
+              defaultValue: false,
+              apply: 'live',
+            },
+          },
+        }}
+        draft={{ autoResumeFailedScans: false }}
+        issues={{}}
+        saving={false}
+        onChange={() => {}}
+      />
+    );
+
+    expect(html).toContain('Auto-resume failed scans');
+    expect(html).toContain('remained failed for about one second');
+    expect(html).toContain('checking twice per second');
+    expect(html).toContain('A scan that keeps failing is retried on later checks.');
+    expect(html).toContain('id="setting-autoResumeFailedScans"');
+    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('Failed scans wait for a manual resume.');
+    expect(html).toContain('BACKEND_AUTO_RESUME_FAILED_SCANS');
+    expect(html).toContain('Default disabled');
+  });
+
   it('explains the total attempt count when cyber-block retries are enabled', () => {
     const html = renderToStaticMarkup(
       <RuntimeSettingsFields

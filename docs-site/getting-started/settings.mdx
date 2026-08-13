@@ -1,10 +1,10 @@
 ---
 title: "Settings"
-description: "Tune supported engine runtime controls from the open·kritt UI."
+description: "Tune supported runtime controls from the open·kritt UI."
 ---
 
-Open **Settings** under **Configure** to view and edit supported, non-secret engine
-runtime controls. The page shows the configured value, its source, its accepted range,
+Open **Settings** under **Configure** to view and edit supported, non-secret runtime
+controls. The page shows the configured value, its source, its accepted range,
 and whether that value is live or needs an engine container recreation.
 
 ## Available controls
@@ -20,6 +20,7 @@ and whether that value is live or needs an engine container recreation.
 | Workspace setup concurrency | Engine recreation | Limits simultaneous checkout and isolated workspace preparation. |
 | Model-call retries | Live | Additional attempts for retryable workflow-step and post-script model calls. |
 | Cyber-block retries | Live | Opt-in additional attempts after a provider blocks a request under its cybersecurity safety policy. `0` keeps the fail-fast default. |
+| Auto-resume failed scans | Live | Resumes every scan that has remained failed for about one second, continuing from its completed work. Disabled by default. |
 | Model-call timeout | Live | Maximum duration of each future harness invocation. |
 
 Live changes affect future work; already-running model calls keep the values they
@@ -35,9 +36,10 @@ the project `.env` file so a future `docker compose up` recreation keeps them.
 <Warning>
   Raising worker or setup concurrency can exhaust provider rate limits, Docker
   networking, CPU, memory, or disk capacity. Ignoring the low-storage safeguard can
-  fill the host disk and cause scans or other services to fail. The UI asks for
-  confirmation before enabling this override, pausing work, or raising worker slots
-  above the conservative recommendation.
+  fill the host disk and cause scans or other services to fail. Auto-resume can retry a
+  persistent failure repeatedly and consume provider quota. The UI asks for confirmation
+  before enabling the storage override, pausing work, or raising worker slots above the
+  conservative recommendation.
 </Warning>
 
 ## Scheduling behavior
@@ -48,11 +50,17 @@ every slot. With automatic sharing, active scans receive a fair portion of the a
 workers.
 
 Queued scans remain separate from that pool: they start only after active scans finish.
-Automatic resume of an entire failed scan remains intentionally unavailable.
 
-Model-call retries do not automatically resume a scan after it reaches the failed
-state. A failed scan still uses the manual **Resume** action. Temporary provider limits
-use the separate `rate_limited` state and retry automatically.
+**Auto-resume failed scans** is off by default. When enabled, the backend checks twice
+per second and moves every scan that has remained failed for about one second back to
+pending so the engine can continue from its completed work. This happens without an open
+browser or a **Resume** button click. When the setting is disabled, failed scans remain
+failed until you use the manual **Resume** action. Paused and stopped scans always remain
+manual.
+
+Model-call retries happen before a scan reaches the failed state and are independent of
+whole-scan auto-resume. Temporary provider limits use the separate `rate_limited` state
+and their own automatic retry schedule.
 
 Cyber-block retries are independent of ordinary model-call retries. A value of `3`
 allows three retries after the first blocked call, for up to four total attempts.

@@ -300,8 +300,7 @@ a {
 
 .settings-heading p,
 .settings-section-heading p,
-.settings-card p,
-.settings-capability p {
+.settings-card p {
   color: var(--text-2);
   line-height: 1.5;
 }
@@ -373,15 +372,13 @@ a {
   gap: 8px;
 }
 
-.settings-grid,
-.settings-capability-grid {
+.settings-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 14px;
 }
 
-.settings-card,
-.settings-capability {
+.settings-card {
   min-width: 0;
   padding: 18px;
   border: 1px solid var(--border);
@@ -396,15 +393,13 @@ a {
   gap: 12px;
 }
 
-.settings-card h3,
-.settings-capability h3 {
+.settings-card h3 {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
 }
 
-.settings-card p,
-.settings-capability p {
+.settings-card p {
   min-height: 38px;
   margin: 8px 0 16px;
   font-size: 12.5px;
@@ -423,11 +418,6 @@ a {
 .settings-badge-live {
   color: var(--ok);
   background: var(--ok-bg);
-}
-
-.settings-badge-muted {
-  color: var(--text-3);
-  background: var(--surface-2);
 }
 
 .settings-input-label {
@@ -543,20 +533,6 @@ a {
 
 .settings-env-key {
   overflow-wrap: anywhere;
-}
-
-.settings-capability-grid {
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-}
-
-.settings-capability {
-  background: var(--surface-2);
-  box-shadow: none;
-}
-
-.settings-capability p {
-  min-height: 0;
-  margin-bottom: 14px;
 }
 
 .accounts-heading {
@@ -1082,10 +1058,6 @@ a {
 
 @media (max-width: 1080px) {
   .account-provider-grid {
-    grid-template-columns: minmax(0, 1fr);
-  }
-
-  .settings-capability-grid {
     grid-template-columns: minmax(0, 1fr);
   }
 }

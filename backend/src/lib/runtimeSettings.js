@@ -68,6 +68,12 @@ export const RUNTIME_SETTING_DEFINITIONS = Object.freeze({
     type: 'boolean',
     apply: 'live',
   }),
+  autoResumeFailedScans: Object.freeze({
+    envKey: 'BACKEND_AUTO_RESUME_FAILED_SCANS',
+    defaultValue: false,
+    type: 'boolean',
+    apply: 'live',
+  }),
   memoryReserveGb: Object.freeze({
     envKey: 'ENGINE_MEMORY_RESERVE_GB',
     defaultValue: 2,
@@ -208,7 +214,7 @@ export async function readRuntimeSettings({
     capabilities: {
       dedicatedScanConcurrency: { available: true },
       perScanConcurrency: { available: true },
-      automaticScanResume: { available: false, trackedBy: 'RETRY-01' },
+      automaticScanResume: { available: true },
     },
   };
 }

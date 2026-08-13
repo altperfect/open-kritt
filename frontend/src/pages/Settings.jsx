@@ -20,6 +20,13 @@ const PRESENTATION = {
     unit: 'scans',
     description: 'Maximum immediate scans admitted at once. Queued scans wait until the active pool is empty.',
   },
+  autoResumeFailedScans: {
+    label: 'Auto-resume failed scans',
+    description:
+      'Have the backend resume every scan that has remained failed for about one second, checking twice per second. A scan that keeps failing is retried on later checks.',
+    enabledDescription: 'Failed scans are resumed automatically without operator action.',
+    disabledDescription: 'Failed scans wait for a manual resume.',
+  },
   maxWorkersPerScan: {
     label: 'Workers per scan',
     unit: 'workers',
@@ -84,7 +91,7 @@ const PRESENTATION = {
     label: 'Model-call retries',
     unit: 'retries',
     description:
-      'Additional attempts for retryable workflow-step and post-script failures. This does not automatically resume a failed whole scan.',
+      'Additional attempts for retryable workflow-step and post-script failures. Whole-scan recovery is controlled separately by Auto-resume failed scans.',
   },
   cyberSafetyRetryCount: {
     label: 'Cyber-block retries',
@@ -105,14 +112,6 @@ const SOURCE_LABELS = {
   project_environment: 'Project .env',
   default: 'Built-in default',
 };
-
-const CAPABILITIES = [
-  {
-    key: 'automaticScanResume',
-    label: 'Whole-scan auto-resume',
-    description: 'Automatically resume failed scans with durable progress and backoff.',
-  },
-];
 
 export default function Settings() {
   const { data, loading, error, reload, setData } = useFetch(() => api.settings(), []);
@@ -193,7 +192,7 @@ export default function Settings() {
         <div>
           <h1>Settings</h1>
           <p>
-            Tune non-secret engine runtime behavior. Provider credentials remain isolated under{' '}
+            Tune non-secret runtime behavior. Provider credentials remain isolated under{' '}
             <Link to="/accounts">Accounts</Link> and are never returned here.
           </p>
         </div>
@@ -217,7 +216,7 @@ export default function Settings() {
           <section className="settings-section">
             <div className="settings-section-heading">
               <div>
-                <h2>Engine runtime</h2>
+                <h2>Runtime settings</h2>
                 <p>Only whitelisted, non-secret settings are exposed by the API.</p>
               </div>
               <div className="settings-actions">
@@ -237,30 +236,6 @@ export default function Settings() {
             </div>
 
             <RuntimeSettingsFields data={data} draft={draft} issues={issues} saving={saving} onChange={set} />
-          </section>
-
-          <section className="settings-section">
-            <div className="settings-section-heading">
-              <div>
-                <h2>Scheduling roadmap</h2>
-                <p>Additional lifecycle behavior that remains intentionally manual.</p>
-              </div>
-            </div>
-            <div className="settings-capability-grid">
-              {CAPABILITIES.map((capability) => {
-                const state = data.capabilities[capability.key];
-                return (
-                  <div className="settings-capability" key={capability.key}>
-                    <div className="settings-card-topline">
-                      <h3>{capability.label}</h3>
-                      <span className="settings-badge settings-badge-muted">Not available</span>
-                    </div>
-                    <p>{capability.description}</p>
-                    <div className="mono settings-env-key">Tracked by {state.trackedBy}</div>
-                  </div>
-                );
-              })}
-            </div>
           </section>
         </>
       )}

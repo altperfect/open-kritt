@@ -19,6 +19,7 @@ import { lockWorkflowForScan } from '../lib/workflowLocks.js';
 import { lockPostScriptForScan } from '../lib/postScriptLocks.js';
 import { lockAgentSkillForScan } from '../lib/agentSkillLocks.js';
 import { lockScanForMutation } from '../lib/scanLocks.js';
+import { resumedScanData } from '../lib/failedScanRecovery.js';
 import {
   createFindingExport,
   createFindingExportLimiter,
@@ -363,8 +364,7 @@ export async function patchScanIfPresent(tx, scanId, body, { assertAvailable, av
       // Nullable Prisma JSON fields distinguish SQL NULL from the JSON scalar
       // `null`. Scan reasoning is either an object or SQL NULL; storing a JSON
       // scalar here breaks engine-side nested warning updates.
-      data.reasoning = Prisma.DbNull;
-      data.lastResumedAt = new Date();
+      Object.assign(data, resumedScanData());
     }
   }
 

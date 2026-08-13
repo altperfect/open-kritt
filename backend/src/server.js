@@ -2,6 +2,7 @@ import { createApp } from './app.js';
 import { disconnect } from './db.js';
 import { ensureDefaultSeverityRankers } from './lib/defaultSeverityRankers.js';
 import { ensureDefaultWorkflows } from './lib/defaultWorkflows.js';
+import { startFailedScanRecovery } from './lib/failedScanRecovery.js';
 import { logger } from './lib/logger.js';
 
 const PORT = process.env.BACKEND_PORT || process.env.PORT || 3002;
@@ -17,12 +18,14 @@ if (installedRankers.length) {
 }
 
 const app = createApp();
+const failedScanRecovery = startFailedScanRecovery();
 const server = app.listen(PORT, HOST, () => {
   logger.info({ host: HOST, port: PORT }, `open-kritt backend listening on http://${HOST}:${PORT}`);
 });
 
 async function shutdown(signal) {
   logger.info({ signal }, 'shutting down');
+  failedScanRecovery.stop();
   server.close(async () => {
     await disconnect();
     process.exit(0);
