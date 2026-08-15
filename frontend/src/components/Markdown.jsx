@@ -61,8 +61,13 @@ export function parseMarkdownBlocks(md) {
     if (/^\s*[-*+]\s+/.test(line)) {
       const items = [];
       while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*[-*+]\s+/, ''));
+        const itemParts = [lines[i].replace(/^\s*[-*+]\s+/, '')];
         i++;
+        while (i < lines.length && /^\s+\S/.test(lines[i]) && !/^\s*(?:[-*+]|\d+\.)\s+/.test(lines[i])) {
+          itemParts.push(lines[i].trim());
+          i++;
+        }
+        items.push(itemParts.join(' '));
       }
       blocks.push({ type: 'ul', items });
       continue;
@@ -71,8 +76,13 @@ export function parseMarkdownBlocks(md) {
     if (/^\s*\d+\.\s+/.test(line)) {
       const items = [];
       while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
-        items.push(lines[i].replace(/^\s*\d+\.\s+/, ''));
+        const itemParts = [lines[i].replace(/^\s*\d+\.\s+/, '')];
         i++;
+        while (i < lines.length && /^\s+\S/.test(lines[i]) && !/^\s*(?:[-*+]|\d+\.)\s+/.test(lines[i])) {
+          itemParts.push(lines[i].trim());
+          i++;
+        }
+        items.push(itemParts.join(' '));
       }
       blocks.push({ type: 'ol', items });
       continue;
@@ -98,41 +108,76 @@ const codeStyle = {
   padding: '1px 5px',
 };
 const linkStyle = { color: 'var(--accent)', textDecoration: 'underline' };
+const PLAIN_TEXT_CANDIDATE_RE = /\S+/gu;
+const SNAKE_CASE_IDENTIFIER_RE = /^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/;
+const SNAKE_CASE_FILENAME_RE = /^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+(?:\.[A-Za-z0-9]+)+(?::[1-9][0-9]*)?$/;
+const LEADING_TOKEN_WRAPPERS = new Set(['(', '[', '{', "'", '"', '“', '‘']);
+const TRAILING_TOKEN_WRAPPERS = new Set([')', ']', '}', "'", '"', '”', '’']);
+const TRAILING_SENTENCE_PUNCTUATION = new Set(['.', ',', ';', ':', '!', '?']);
+
+function plainCodeBounds(candidate) {
+  let start = 0;
+  let end = candidate.length;
+  while (start < end && LEADING_TOKEN_WRAPPERS.has(candidate[start])) start++;
+
+  const trimTrailingWrappers = () => {
+    while (end > start && TRAILING_TOKEN_WRAPPERS.has(candidate[end - 1])) end--;
+  };
+  trimTrailingWrappers();
+  if (end > start && TRAILING_SENTENCE_PUNCTUATION.has(candidate[end - 1])) end--;
+  trimTrailingWrappers();
+
+  const core = candidate.slice(start, end);
+  if (!SNAKE_CASE_IDENTIFIER_RE.test(core) && !SNAKE_CASE_FILENAME_RE.test(core)) return null;
+  return { start, end };
+}
+
+function plainCodeRanges(value) {
+  const ranges = [];
+  for (const match of value.matchAll(PLAIN_TEXT_CANDIDATE_RE)) {
+    const bounds = plainCodeBounds(match[0]);
+    if (!bounds) continue;
+    ranges.push({ start: match.index + bounds.start, end: match.index + bounds.end });
+  }
+  return ranges;
+}
 
 // Render inline markdown (code, bold, italic, links) within a text string.
 function inline(text) {
   const out = [];
+  const autoCodeRanges = plainCodeRanges(text);
+  let autoCodeRangeIndex = 0;
   let key = 0;
-  const pushPlain = (value) => {
-    let last = 0;
-    for (const match of value.matchAll(/[A-Za-z0-9_]+/g)) {
-      const segment = match[0];
-      if (!segment.includes('_') || !/^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/.test(segment)) continue;
-      if (match.index > last) out.push(<span key={key++}>{value.slice(last, match.index)}</span>);
+
+  const pushPlain = (start, end) => {
+    let last = start;
+    while (autoCodeRangeIndex < autoCodeRanges.length && autoCodeRanges[autoCodeRangeIndex].end <= start) {
+      autoCodeRangeIndex++;
+    }
+    while (autoCodeRangeIndex < autoCodeRanges.length) {
+      const range = autoCodeRanges[autoCodeRangeIndex];
+      if (range.start >= end) break;
+      autoCodeRangeIndex++;
+      if (range.start < start || range.end > end) continue;
+
+      if (range.start > last) out.push(<span key={key++}>{text.slice(last, range.start)}</span>);
       out.push(
         <code key={key++} style={codeStyle}>
-          {segment}
+          {text.slice(range.start, range.end)}
         </code>
       );
-      last = match.index + segment.length;
+      last = range.end;
     }
-    if (last < value.length) out.push(<span key={key++}>{value.slice(last)}</span>);
+    if (last < end) out.push(<span key={key++}>{text.slice(last, end)}</span>);
   };
 
-  for (const part of text.split(/(`[^`]+`)/g)) {
-    if (/^`[^`]+`$/.test(part)) {
-      out.push(
-        <code key={key++} style={codeStyle}>
-          {part.slice(1, -1)}
-        </code>
-      );
-      continue;
-    }
-    const re = /(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*|(?<!\w)_[^_\s](?:[^_]*?[^_\s])?_(?!\w))/g;
+  const pushFormatted = (start, end) => {
+    const part = text.slice(start, end);
+    const re = /(\*\*[^*]+\*\*|\[[^\][\r\n]+\]\([^)[\r\n]+\)|\*[^*\s][^*]*\*|(?<!\w)_[^_\s](?:[^_]*?[^_\s])?_(?!\w))/g;
     let last = 0;
     let m;
     while ((m = re.exec(part))) {
-      if (m.index > last) pushPlain(part.slice(last, m.index));
+      if (m.index > last) pushPlain(start + last, start + m.index);
       const tok = m[0];
       if (tok.startsWith('**')) out.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
       else if (tok.startsWith('[')) {
@@ -147,8 +192,20 @@ function inline(text) {
       } else out.push(<em key={key++}>{tok.slice(1, -1)}</em>);
       last = m.index + tok.length;
     }
-    if (last < part.length) pushPlain(part.slice(last));
+    if (last < part.length) pushPlain(start + last, end);
+  };
+
+  let last = 0;
+  for (const match of text.matchAll(/`[^`]+`/g)) {
+    if (match.index > last) pushFormatted(last, match.index);
+    out.push(
+      <code key={key++} style={codeStyle}>
+        {match[0].slice(1, -1)}
+      </code>
+    );
+    last = match.index + match[0].length;
   }
+  if (last < text.length) pushFormatted(last, text.length);
   return out;
 }
 
@@ -234,12 +291,7 @@ function renderBlock(block, i) {
     default:
       return (
         <p key={i} style={{ margin: '0 0 14px', lineHeight: 1.65, color: 'var(--text)' }}>
-          {block.text.split('\n').map((l, j) => (
-            <span key={j}>
-              {j > 0 && <br />}
-              {inline(l)}
-            </span>
-          ))}
+          {inline(block.text.replace(/\n/g, ' '))}
         </p>
       );
   }
