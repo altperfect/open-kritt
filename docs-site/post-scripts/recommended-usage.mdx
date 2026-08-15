@@ -48,8 +48,9 @@ finding - see [reserved post-scripts](/post-scripts/reserved-post-scripts).
 ## Proofs of concept
 
 The bundled **PoC Creator** asks the model to build and run a local proof of concept, then
-returns the resulting Git diff through the reserved `_reserved_poc` key. It renders as a
-**PoC** tab.
+returns a reviewer-ready Markdown PoC with complete files, reproduction steps, validation
+evidence, and any concrete blockers through the reserved `_reserved_poc` key. It renders
+as a **PoC** tab.
 
 <Card title="PoCs" icon="flask">
   Turn a described vulnerability into a concrete, reproducible proof of concept.
