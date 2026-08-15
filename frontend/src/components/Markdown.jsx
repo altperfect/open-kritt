@@ -103,6 +103,22 @@ const linkStyle = { color: 'var(--accent)', textDecoration: 'underline' };
 function inline(text) {
   const out = [];
   let key = 0;
+  const pushPlain = (value) => {
+    let last = 0;
+    for (const match of value.matchAll(/[A-Za-z0-9_]+/g)) {
+      const segment = match[0];
+      if (!segment.includes('_') || !/^[A-Za-z0-9]+(?:_[A-Za-z0-9]+)+$/.test(segment)) continue;
+      if (match.index > last) out.push(<span key={key++}>{value.slice(last, match.index)}</span>);
+      out.push(
+        <code key={key++} style={codeStyle}>
+          {segment}
+        </code>
+      );
+      last = match.index + segment.length;
+    }
+    if (last < value.length) out.push(<span key={key++}>{value.slice(last)}</span>);
+  };
+
   for (const part of text.split(/(`[^`]+`)/g)) {
     if (/^`[^`]+`$/.test(part)) {
       out.push(
@@ -112,11 +128,11 @@ function inline(text) {
       );
       continue;
     }
-    const re = /(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
+    const re = /(\*\*[^*]+\*\*|\[[^\]]+\]\([^)]+\)|\*[^*\s][^*]*\*|(?<!\w)_[^_\s](?:[^_]*?[^_\s])?_(?!\w))/g;
     let last = 0;
     let m;
     while ((m = re.exec(part))) {
-      if (m.index > last) out.push(<span key={key++}>{part.slice(last, m.index)}</span>);
+      if (m.index > last) pushPlain(part.slice(last, m.index));
       const tok = m[0];
       if (tok.startsWith('**')) out.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
       else if (tok.startsWith('[')) {
@@ -124,20 +140,14 @@ function inline(text) {
         const href = lm[2];
         const isSafe = /^(?:https?:\/\/|#|\/)/.test(href);
         out.push(
-          <a
-            key={key++}
-            href={isSafe ? href : ''}
-            target="_blank"
-            rel="noreferrer"
-            style={linkStyle}
-          >
+          <a key={key++} href={isSafe ? href : ''} target="_blank" rel="noreferrer" style={linkStyle}>
             {lm[1]}
           </a>
         );
       } else out.push(<em key={key++}>{tok.slice(1, -1)}</em>);
       last = m.index + tok.length;
     }
-    if (last < part.length) out.push(<span key={key++}>{part.slice(last)}</span>);
+    if (last < part.length) pushPlain(part.slice(last));
   }
   return out;
 }
